@@ -22,14 +22,17 @@ Save the file to the `data/philgeps/` directory.
 
 ## Step 2: Extract Data with DuckDB
 
-Use DuckDB to extract and prepare the aggregated data using the provided SQL script:
+First flag duplicate rows, then build the aggregates from the flagged file:
 
 ```bash
 cd data/philgeps
+duckdb < philgeps-clean.sql
 duckdb < philgeps-extract.sql
 ```
 
-This will create the necessary parquet files for aggregated data (area_of_deliveries, awardees, business_categories, organizations).
+`philgeps-clean.sql` writes `philgeps_clean.parquet`: every row from `philgeps.parquet` (none are removed), plus `dup_group`, `dup_rank`, `dup_count`, `counted` and `award_date_suspect`. Rows that are identical in every column except `id` share a `dup_group`; `dup_rank` is 1 for the first and 2+ for copies. It also writes `dup_groups.parquet` (one row per group of copies, for review) and prints a summary. Whether copies count toward totals is decided by `counting_rule` in that file; currently every row counts.
+
+`philgeps-extract.sql` then creates the aggregate parquet files (area_of_deliveries, awardees, business_categories, organizations) from rows where `counted` is true.
 
 ## Step 3: Split CSV into Batches
 
@@ -49,7 +52,7 @@ python split-csv.py philgeps/philgeps.csv --batch-size 50000 --output-dir philge
 
 This creates smaller CSV files in `philgeps/philgeps_batches/` directory (e.g., `batch_0001.csv`, `batch_0002.csv`, etc.).
 
-**Record ids are deterministic:** `id` is an md5 of the record's content plus an occurrence number (`<md5>-1`, `<md5>-2`, ...) for rows that are exact copies of each other. Re-exporting the same parquet gives the same ids. The id shipped in the parquet is kept as `source_id`.
+**Record ids are deterministic:** `id` is an md5 of the record's content plus an occurrence number (`<md5>-1`, `<md5>-2`, ...) for rows that are exact copies of each other. Re-exporting the same parquet gives the same ids. The id shipped in the parquet is kept as `source_id`. The export reads `philgeps_clean.parquet`, so run Step 2 first; the duplicate flags are included as columns.
 
 **Note:** You can adjust the `--batch-size` parameter based on your system's memory. Larger batches = faster import but more memory usage.
 
