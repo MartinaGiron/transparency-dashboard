@@ -40,8 +40,28 @@ REVIEW_COLUMNS = [
     "rows_a", "amount_a", "rows_b", "amount_b", "amount_at_stake",
     "shared_organizations", "organizations_a", "organizations_b", "top_shared_organizations",
     "years_a", "years_b", "notes_a", "notes_b",
+    "dpwh_contractor_a", "dpwh_contractor_b", "dpwh_evidence",
+    "suggested_decision", "suggested_reason",
     "decision", "reviewer_notes",
 ]
+
+# DPWH contract IDs (e.g. 24F00470) at the start of a PhilGEPS award or notice title.
+DPWH_CONTRACT_ID = r"^([0-9]{2}[A-Z]{1,2}[0-9]{4,5})\b"
+DPWH_CONTRACTOR = re.compile(r"(.+?)\s*\((\d+)\)")
+
+# Ignored when checking whether a DPWH contractor entry is this awardee, so that
+# "STO CRISTO CONSTRUCTION AND TRADING" doesn't match "CHOLO CONSTRUCTION AND TRADING".
+GENERIC_WORDS = {
+    "AND", "CONSTRUCTION", "CONSTRUCTIONS", "BUILDERS", "BUILDER", "DEVELOPMENT", "TRADING",
+    "SUPPLY", "SUPPLIES", "ENTERPRISES", "GENERAL", "MERCHANDISE", "SERVICES", "CONTRACTOR",
+    "CONTRACTORS", "ENGINEERING", "REALTY", "INDUSTRIES", "CORP", "INC", "CO", "OPC", "LTD",
+    "PHILIPPINES", "FORMERLY",
+}
+
+
+def distinctive(core_key):
+    words = [w for w in core_key.split() if w not in GENERIC_WORDS]
+    return " ".join(words) or core_key
 
 
 def load_names(con, input_path):
@@ -169,6 +189,55 @@ def organization_evidence(con, input_path, groups, pairs):
     return org_counts, shared
 
 
+def dpwh_contractors(con, input_path, dpwh_path, groups, keys):
+    """DPWH contractor registrations per group, from PhilGEPS rows whose title starts
+    with a DPWH contract ID. DPWH lists each contractor as "NAME (ID)", and joint
+    ventures as several of those, so each awardee is matched to its own entry.
+    Returns {clean_key: {(dpwh_id, dpwh_name): contracts}}."""
+    rows = con.execute(f"""
+        SELECT DISTINCT p.awardee_name, d.contractor
+        FROM (SELECT awardee_name,
+                     coalesce(nullif(regexp_extract(award_title, '{DPWH_CONTRACT_ID}', 1), ''),
+                              nullif(regexp_extract(notice_title, '{DPWH_CONTRACT_ID}', 1), '')) AS contract_id
+              FROM read_parquet('{input_path}')) p
+        JOIN read_parquet('{dpwh_path}') d ON d.contractId = p.contract_id
+    """).fetchall()
+    group_of = {raw: k for k in keys for raw, _, _ in groups[k]["names"]}
+    found = defaultdict(lambda: defaultdict(int))
+    for raw, contractor in rows:
+        key = group_of.get(raw)
+        if key is None:
+            continue
+        entries = [(m.group(2), m.group(1).strip(" /")) for m in DPWH_CONTRACTOR.finditer(contractor or "")]
+        if not entries:
+            continue
+        own = distinctive(groups[key]["core_key"])
+        score = lambda e: SequenceMatcher(None, own, distinctive(name_keys(e[1])["core_key"])).ratio()
+        best = max(entries, key=score)
+        if score(best) >= 0.85:
+            found[key][best] += 1
+    # Keep registrations seen on at least a fifth as many contracts as the most common one.
+    return {k: {e: n for e, n in v.items() if n >= max(v.values()) * 0.2} for k, v in found.items()}
+
+
+def suggest(method, n_shared, dpwh_a, dpwh_b):
+    """Suggested decision and reason; the reviewer confirms it in `decision`."""
+    if dpwh_a and dpwh_b:
+        ids_a, ids_b = {i for i, _ in dpwh_a}, {i for i, _ in dpwh_b}
+        if ids_a == ids_b:
+            return "same_id", "yes", "same DPWH contractor ID"
+        if ids_a & ids_b:
+            return "mixed_ids", "", "DPWH links one of these names to more than one contractor ID; check"
+        return "different_id", "no", "different DPWH contractor IDs: separate registrations (mark related if same owner)"
+    if method == "fuzzy" and n_shared == 0:
+        return "none", "no", "fuzzy match with no shared buyers"
+    return "none", "", ""
+
+
+def describe_dpwh(entries):
+    return " | ".join(f"{name} ({i})" for (i, name), _ in sorted(entries.items(), key=lambda x: -x[1])) if entries else ""
+
+
 def years(g):
     if g["first_year"] is None:
         return ""
@@ -187,6 +256,8 @@ def main():
     parser.add_argument("--out-dir", default="out", help="Output directory")
     parser.add_argument("--min-amount", type=float, default=1e9, help="Keep pairs where one side has at least this amount")
     parser.add_argument("--min-similarity", type=float, default=0.9, help="Minimum difflib ratio for fuzzy pairs")
+    parser.add_argument("--dpwh", help="Optional dpwh_transparency_data.parquet (huggingface.co/datasets/bettergovph/"
+                                       "dpwh-transparency-data) for contractor-ID evidence")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -207,6 +278,8 @@ def main():
 
     pairs = list(candidate_pairs(groups, args.min_amount, args.min_similarity))
     org_counts, shared = organization_evidence(con, args.input, groups, pairs)
+    keys = {k for a, b, _, _ in pairs for k in (a, b)}
+    dpwh = dpwh_contractors(con, args.input, args.dpwh, groups, keys) if args.dpwh else {}
 
     rows = []
     for a, b, method, similarity in pairs:
@@ -214,6 +287,7 @@ def main():
         if gb["amount"] > ga["amount"]:
             a, b, ga, gb = b, a, gb, ga
         n_shared, top_shared = shared.get(tuple(sorted((a, b))), (0, ""))
+        evidence, suggestion, reason = suggest(method, n_shared, dpwh.get(a), dpwh.get(b))
         rows.append({
             "match_method": method, "similarity": similarity,
             "name_a": ga["display"], "name_b": gb["display"],
@@ -226,6 +300,8 @@ def main():
             "top_shared_organizations": top_shared,
             "years_a": years(ga), "years_b": years(gb),
             "notes_a": " ; ".join(sorted(set(ga["notes"]))), "notes_b": " ; ".join(sorted(set(gb["notes"]))),
+            "dpwh_contractor_a": describe_dpwh(dpwh.get(a)), "dpwh_contractor_b": describe_dpwh(dpwh.get(b)),
+            "dpwh_evidence": evidence if args.dpwh else "", "suggested_decision": suggestion, "suggested_reason": reason,
             "decision": "", "reviewer_notes": "",
         })
     rows.sort(key=lambda r: -r["amount_at_stake"])
@@ -245,6 +321,10 @@ def main():
     print(f"Awardee names:            {len(names):,} ({jv:,} joint ventures left out)")
     print(f"After auto-merge:         {len(groups):,} ({merged:,} groups of spellings merged)")
     print(f"Pairs to review:          {len(rows):,} " + ", ".join(f"{m}: {n:,}" for m, n in sorted(methods.items())))
+    suggested = defaultdict(int)
+    for r in rows:
+        suggested[r["suggested_decision"] or "none"] += 1
+    print(f"Suggested decisions:      " + ", ".join(f"{s}: {n:,}" for s, n in sorted(suggested.items())))
     print(f"Written to {args.out_dir}/auto_merges.csv and {args.out_dir}/awardee_match_review.csv")
 
 

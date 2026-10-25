@@ -7,8 +7,10 @@ Groups awardee name spellings that belong to the same contractor (e.g. `EGB CONS
 ```bash
 cd data/philgeps/entities
 
-# 1. Find candidates (needs ../philgeps.parquet)
-python match_awardees.py --input ../philgeps.parquet --min-amount 1e9
+# 1. Find candidates (needs ../philgeps.parquet). --dpwh is optional: DPWH's own data,
+#    from huggingface.co/datasets/bettergovph/dpwh-transparency-data
+python match_awardees.py --input ../philgeps.parquet --min-amount 1e9 \
+    --dpwh dpwh_transparency_data.parquet
 
 # 2. Review out/awardee_match_review.csv: set `decision` to yes / no / unsure for each pair
 
@@ -33,6 +35,17 @@ python -m unittest test_normalize
 | `loose_key` | also trailing business types: TRADING, ENTERPRISES, GENERAL MERCHANDISE, SUPPLY, SERVICES | possibly related, reviewed |
 
 `match_awardees.py` also proposes fuzzy pairs (similar `core_key`). Names whose numbers differ (`729 CONSTRUCTION` vs `722 CONSTRUCTION`) are never paired. Joint ventures are left out and handled separately.
+
+With `--dpwh`, each side is linked to its DPWH contractor registration ("NAME (ID)") through PhilGEPS rows whose title starts with a DPWH contract ID. Only the distinctive part of the name is compared, so `STO CRISTO CONSTRUCTION AND TRADING` isn't linked to `CHOLO CONSTRUCTION AND TRADING`. DPWH keeps one ID across renames (`EGB CONSTRUCTION CORPORATION (FORMERLY: EGB CONSTRUCTION)`), so:
+
+| `dpwh_evidence` | `suggested_decision` |
+|---|---|
+| `same_id` | yes |
+| `different_id` | no (separate registrations; note "related" if same owner) |
+| `mixed_ids` | blank: one name is linked to more than one ID |
+| `none` | blank, or no for fuzzy pairs with no shared buyers |
+
+Suggestions are not applied: `build_seeds.py` only reads `decision`.
 
 The review file is sorted by the amount that would move if a pair is merged. Its evidence columns help decide: how many buying organizations the two names share, each name's active years, and any notes cut from the name. Precision matters more than recall here: wrongly merging two real contractors is worse than leaving a variant unmerged, so mark anything doubtful `no` or `unsure`.
 
