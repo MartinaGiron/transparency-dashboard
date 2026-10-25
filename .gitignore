@@ -34,3 +34,5 @@ data/import.py
 data/bir/bir_collections.sql
 data/.venv
 data/ai-reports/
+data/philgeps/entities/out/
+__pycache__/
