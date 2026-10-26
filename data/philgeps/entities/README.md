@@ -46,6 +46,7 @@ To record a decision, edit these columns and leave the others alone:
 | `status` | `confirmed` once you've checked it yourself; `provisional` if it rests on automated evidence only |
 | `basis` | what you relied on, e.g. `SEC registration CS2015-12345`, `DTI BNRS 1234567`, `PCAB license 12345`, `same DPWH contractor ID` |
 | `notes`, `reviewer`, `reviewed_on` | free text, your name, the date (YYYY-MM-DD) |
+| `assigned_to` | who the pair is handed to; set by `export --assign`, cleared by `apply` |
 
 Where to start:
 1. `pending` rows (48), especially those with ₱1B or more at stake. They need a registry lookup: SEC "Check with SEC" for corporations, DTI's business name search (BNRS) for sole proprietorships, PCAB's licensed contractor list for construction firms. Two registrations means `separate` (or `related`); one registration, or one listing the other name as a former name, means `merge`.
@@ -57,6 +58,26 @@ When unsure, choose `pending` or `separate`. A missed merge is harmless; a wrong
 After editing, rerun steps 2–3 above. `review_decisions.py check` lists any invalid values or contradictions (e.g. A = B and B = C merged, but A–C marked separate), and `build_seeds.py` refuses to build until they're fixed.
 
 To add a pair the matcher didn't propose, add a row with both names spelled exactly as in PhilGEPS.
+
+## Handing pairs to another reviewer
+
+To give a batch (e.g. all `pending` pairs that need a registry lookup) to someone without handing out the decisions file:
+
+```bash
+# Write a worksheet with the evidence and blank answer columns, and mark the pairs as assigned
+python review_decisions.py export --decision pending --assign "registry reviewer" --out pending_lookups.csv
+
+# ...the reviewer fills in answer, registry and registration numbers, reviewer, reviewed_on...
+
+# Bring it back, then check and rebuild
+python review_decisions.py apply --from pending_lookups.csv
+python review_decisions.py check
+python build_seeds.py --input ../philgeps.parquet
+```
+
+`apply` only updates pairs that are still `pending`, and never overwrites a decision made in the meantime. An answer becomes `confirmed` when it has a registration number and a reviewer name; otherwise it's applied as `provisional`. `unsure` keeps the pair pending, with the reviewer's note added. Invalid answers are reported and skipped. If the answers would contradict other decisions, nothing is written.
+
+While a batch is out, `assigned_to` shows who has it. Assigned pairs stay `pending`, which the build treats as separate.
 
 ## Output format
 

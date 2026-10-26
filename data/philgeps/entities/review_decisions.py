@@ -20,6 +20,7 @@ Columns
     basis              what the decision rests on, e.g. "same DPWH contractor ID",
                        "SEC registration CS2019-01234"
     notes, reviewer, reviewed_on
+    assigned_to        who a pair is handed to (set by `export --assign`); cleared by `apply`
     amount_at_stake, evidence   context from the latest match run (refreshed by `import`;
                                 editing them has no effect)
 
@@ -31,6 +32,14 @@ Commands (from data/philgeps/entities):
         Existing decisions are never changed.
     python review_decisions.py check
         Validate the file and report conflicts (e.g. A=B and B=C merged, A-C separate).
+    python review_decisions.py export --decision pending --assign "registry reviewer" \
+            --review out/awardee_match_review.csv --out pending_lookups.csv
+        Write a self-contained worksheet for another reviewer (all evidence plus blank
+        answer columns) and mark the pairs as assigned. The decisions file is not
+        handed out.
+    python review_decisions.py apply --from pending_lookups.csv
+        Bring a returned worksheet back: rows with an answer update pairs that are
+        still pending; anything else is reported and left alone.
 """
 
 import argparse
@@ -43,8 +52,21 @@ from collections import defaultdict
 
 DECISIONS = os.path.join("decisions", "awardee_decisions.csv")
 COLUMNS = ["name_a", "name_b", "decision", "parent_name", "status", "basis", "notes",
-           "reviewer", "reviewed_on", "amount_at_stake", "evidence"]
-EDITABLE = ["decision", "parent_name", "status", "basis", "notes", "reviewer", "reviewed_on"]
+           "reviewer", "reviewed_on", "assigned_to", "amount_at_stake", "evidence"]
+EDITABLE = ["decision", "parent_name", "status", "basis", "notes", "reviewer", "reviewed_on", "assigned_to"]
+
+# Worksheet for an outside reviewer: context first, then the answer columns.
+WORKSHEET_CONTEXT = [
+    "priority", "name_a", "name_b", "amount_at_stake", "why_pending",
+    "other_spellings_a", "other_spellings_b", "rows_a", "amount_a", "rows_b", "amount_b",
+    "years_a", "years_b", "shared_organizations", "organizations_a", "organizations_b",
+    "top_shared_organizations", "notes_a", "notes_b", "dpwh_contractor_a", "dpwh_contractor_b",
+    "relation_label", "relation_evidence",
+]
+WORKSHEET_ANSWERS = [
+    "answer", "parent_name", "registry_a", "registration_no_a", "registry_b", "registration_no_b",
+    "source_notes", "reviewer", "reviewed_on",
+]
 VALID_DECISIONS = {"merge", "separate", "related", "branch", "pending"}
 VALID_STATUS = {"provisional", "confirmed"}
 
@@ -226,6 +248,94 @@ def cmd_check(args):
     return 1 if problems else 0
 
 
+def cmd_export(args):
+    decisions = read_decisions(args.decisions)
+    review = {}
+    if args.review and os.path.exists(args.review):
+        with open(args.review, newline="", encoding="utf-8") as f:
+            review = {pair_key(r["name_a"], r["name_b"]): r for r in csv.DictReader(f)}
+    chosen = [d for d in decisions if d["decision"] == args.decision]
+    out = []
+    for d in chosen:
+        r = review.get(pair_key(d["name_a"], d["name_b"]), {})
+        stake = float(d["amount_at_stake"] or 0)
+        row = {c: r.get(c, "") for c in WORKSHEET_CONTEXT}
+        row.update(priority="high" if stake >= MATERIAL_AMOUNT else "normal", name_a=d["name_a"], name_b=d["name_b"],
+                   amount_at_stake=d["amount_at_stake"], why_pending=d["notes"] or d["basis"])
+        row.update({c: "" for c in WORKSHEET_ANSWERS})
+        out.append(row)
+        if args.assign:
+            d["assigned_to"] = args.assign
+    out.sort(key=lambda r: (r["priority"] != "high", -float(r["amount_at_stake"] or 0)))
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=WORKSHEET_CONTEXT + WORKSHEET_ANSWERS)
+        w.writeheader()
+        w.writerows(out)
+    if args.assign:
+        write_decisions(decisions, args.decisions)
+    high = sum(1 for r in out if r["priority"] == "high")
+    print(f"{len(out)} {args.decision} pairs written to {args.out} ({high} high priority)"
+          + (f"; marked assigned_to = {args.assign!r}" if args.assign else ""))
+
+
+ANSWERS = {"merge", "separate", "related", "branch", "unsure"}
+
+
+def cmd_apply(args):
+    decisions = read_decisions(args.decisions)
+    by_key = {pair_key(d["name_a"], d["name_b"]): d for d in decisions}
+    applied, skipped, problems = 0, 0, []
+    with open(getattr(args, "from"), newline="", encoding="utf-8") as f:
+        for i, row in enumerate(csv.DictReader(f), 2):
+            answer = (row.get("answer") or "").strip().lower()
+            if not answer:
+                skipped += 1
+                continue
+            where = f"line {i} ({row['name_a']} / {row['name_b']})"
+            d = by_key.get(pair_key(row["name_a"], row["name_b"]))
+            if d is None:
+                problems.append(f"{where}: pair not in the decisions file")
+                continue
+            if d["decision"] != "pending":
+                problems.append(f"{where}: already decided as {d['decision']} ({d['status']}); not overwritten")
+                continue
+            if answer not in ANSWERS:
+                problems.append(f"{where}: answer must be one of {sorted(ANSWERS)}, not {answer!r}")
+                continue
+            if answer == "branch" and not (row.get("parent_name") or "").strip():
+                problems.append(f"{where}: branch needs a parent_name")
+                continue
+            if answer == "unsure":
+                d["notes"] = "; ".join(x for x in (d["notes"], f"outside review unsure: {row.get('source_notes', '')}") if x)
+                d["assigned_to"] = ""
+                applied += 1
+                continue
+            regs = [f"{row.get(f'registry_{s}', '').strip()} {row.get(f'registration_no_{s}', '').strip()}".strip()
+                    for s in ("a", "b")]
+            basis = "; ".join(f"{n}: {r}" for n, r in zip((row["name_a"], row["name_b"]), regs) if r)
+            confirmed = bool(basis and (row.get("reviewer") or "").strip())
+            d.update(decision=answer, parent_name=(row.get("parent_name") or "").strip(),
+                     status="confirmed" if confirmed else "provisional",
+                     basis=basis or "outside review, no registration recorded",
+                     notes="; ".join(x for x in (d["notes"], row.get("source_notes", "").strip()) if x),
+                     reviewer=(row.get("reviewer") or "").strip(), reviewed_on=(row.get("reviewed_on") or "").strip(),
+                     assigned_to="")
+            if not confirmed:
+                problems.append(f"{where}: applied as provisional (needs both a registration and a reviewer name to be confirmed)")
+            applied += 1
+    conflicts = validate(decisions)
+    if conflicts:
+        for p in problems + conflicts:
+            print(p)
+        print(f"\nThe worksheet would make the decisions file invalid ({len(conflicts)} problems). Nothing written.")
+        return 1
+    write_decisions(decisions, args.decisions)
+    for p in problems:
+        print(p)
+    print(f"{applied} answers applied, {skipped} rows without an answer left pending, {len(problems)} notes above")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--decisions", default=DECISIONS, help="Decisions file")
@@ -234,8 +344,16 @@ def main():
     p.add_argument("--from", required=True, help="Review CSV (match_awardees.py output, optionally with next_action)")
     p.add_argument("--reviewer", default="", help="Name to record on newly added decisions")
     sub.add_parser("check", help="Validate the decisions file")
+    p = sub.add_parser("export", help="Write a worksheet for another reviewer")
+    p.add_argument("--decision", default="pending", help="Which decisions to export")
+    p.add_argument("--review", default="out/awardee_match_review.csv", help="Match output, for evidence columns")
+    p.add_argument("--out", required=True, help="Worksheet to write")
+    p.add_argument("--assign", default="", help="Mark exported pairs as assigned to this reviewer")
+    p = sub.add_parser("apply", help="Apply a returned worksheet")
+    p.add_argument("--from", required=True, help="Worksheet with answers filled in")
     args = parser.parse_args()
-    sys.exit(cmd_import(args) if args.command == "import" else cmd_check(args))
+    commands = {"import": cmd_import, "check": cmd_check, "export": cmd_export, "apply": cmd_apply}
+    sys.exit(commands[args.command](args))
 
 
 if __name__ == "__main__":
