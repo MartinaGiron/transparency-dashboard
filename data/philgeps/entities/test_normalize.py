@@ -107,6 +107,9 @@ class JointVentureTest(unittest.TestCase):
             "EGB CONSTRUCTION/DALCON CONSTRUCTION (JV)",
             "ABC AND XYZ BUILDERS JOINT VENTURE",
             "A/B CONSORTIUM",
+            "N.B. AVILA CONSTRUCTION / SELPHAR CONSTRUCTION (J.V.)",
+            "NEWBIG FOUR J CONSTRUCTION INC / JTC CRUZ CONSTRUCTION CO, INC. ( J. V )",
+            "MEDILINES JV WITH R.A. TAGALA",
         ]:
             self.assertTrue(is_joint_venture(name), name)
 
@@ -117,6 +120,8 @@ class JointVentureTest(unittest.TestCase):
             "PRINCESS JV GENERAL MERCHANDISE",
             "CJF VISMIN 88 CORP. DOING BUSINESS UNDER THE NAME AND STYLE OF JVS AUDIO SYSTEM",
             "A & B CONSTRUCTION",
+            "J.V. CRUZ TRADING",
+            "J. V. SANTOS CONSTRUCTION",
         ]:
             self.assertFalse(is_joint_venture(name), name)
 

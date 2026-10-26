@@ -8,8 +8,8 @@ Groups awardee name spellings that belong to the same contractor (e.g. `EGB CONS
 
 | File | Who edits it | Committed |
 |---|---|---|
-| `decisions/awardee_decisions.csv` | **reviewers** | yes |
-| `normalize.py`, `match_awardees.py`, `triage.py`, `review_decisions.py`, `build_seeds.py` | developers | yes |
+| `decisions/awardee_decisions.csv`, `decisions/jv_decisions.csv` | **reviewers** | yes |
+| `normalize.py`, `match_awardees.py`, `triage.py`, `review_decisions.py`, `jv_members.py`, `build_seeds.py` | developers | yes |
 | `out/` (review file, automatic merges, entity tables) | nobody, regenerated | no |
 
 ## Running the pipeline
@@ -26,10 +26,16 @@ python review_decisions.py import --from out/awardee_match_review.csv
 
 # 3. Check the decisions, then build the entity tables
 python review_decisions.py check
+
+# 4. Joint ventures: propose members, add new JV names to decisions/jv_decisions.csv
+python jv_members.py propose --input ../philgeps.parquet --dpwh dpwh_transparency_data.parquet
+python jv_members.py import --from out/jv_review.csv
+
+# 5. Build the entity tables
 python build_seeds.py --input ../philgeps.parquet
 ```
 
-Outputs in `out/`: `entity.csv`, `entity_alias.csv`, `entity_relation.csv`, and `entity_summary.csv` (largest entities, their total vs. their largest single spelling). Tests: `python -m unittest test_normalize test_triage`.
+Outputs in `out/`: `entity.csv`, `entity_alias.csv`, `entity_relation.csv`, and `entity_summary.csv` (largest entities, their total vs. their largest single spelling), `entity_membership.csv` (JV members) and `contractor_jv_summary.csv` (each contractor's direct, JV "involved in" and JV "attributed" totals). Tests: `python -m unittest test_normalize test_triage test_jv_members`.
 
 `out/awardee_match_review.csv` includes the triage columns from `triage.py` (`relation_label`, `evidence_score`, `next_action`, ...). Step 2 turns `next_action` into provisional decisions for new pairs only.
 
@@ -59,6 +65,10 @@ After editing, rerun steps 2–3 above. `review_decisions.py check` lists any in
 
 To add a pair the matcher didn't propose, add a row with both names spelled exactly as in PhilGEPS.
 
+## Reviewing joint ventures
+
+`decisions/jv_decisions.csv` has one row per JV name with its `members`, separated by ` | ` and spelled as in PhilGEPS where the member is an awardee itself. `notes` and `evidence` say why a row needs a look: a member not found as a contractor, DPWH listing different members, or a JV found only by its `/`. Out of 1,169 JV names, 209 are flagged in `out/jv_review.csv` (`needs_review = yes`). Correct `members` if needed, and set `status` to `confirmed` with a `basis` (e.g. `DPWH contractor listing`, `notice of award`) and your name.
+
 ## Handing pairs to another reviewer
 
 To give a batch (e.g. all `pending` pairs that need a registry lookup) to someone without handing out the decisions file:
@@ -84,5 +94,7 @@ While a batch is out, `assigned_to` shows who has it. Assigned pairs stay `pendi
 - `entity.csv`: `entity_id, canonical_name, entity_type, uacs_code`
 - `entity_alias.csv`: `raw_name, source, entity_id, match_method, confidence, reviewed`. `match_method` is `normalized` (automatic), `evidence` (provisional decision) or `reviewed` (confirmed decision).
 - `entity_relation.csv`: `entity_id, related_entity_id, relation, status, basis`. `relation` is `related` or `branch_of` (pointing to the parent).
+- `entity_membership.csv`: `parent_entity_id` (the JV), `member_entity_id`, `share`, `evidence`.
+- `contractor_jv_summary.csv`: `direct_total`, `jv_involved_total` (not additive across contractors), `jv_attributed_total`.
 
 Only names in a multi-name entity or a relation are listed; any other `awardee_name` is its own entity.

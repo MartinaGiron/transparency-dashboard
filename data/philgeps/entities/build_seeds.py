@@ -10,6 +10,9 @@ Writes to --out-dir:
     entity_alias.csv     raw_name, source, entity_id, match_method, confidence, reviewed
     entity_relation.csv  entity_id, related_entity_id, relation, status, basis
     entity_summary.csv   largest entities: total vs. their largest single spelling
+    entity_membership.csv          parent_entity_id (JV), member_entity_id, share, evidence
+    contractor_jv_summary.csv      per contractor: direct total, JV "involved in" total
+                                   (full JV amount) and "attributed" total (JV amount x share)
 
 Rules:
     - merge decisions (and automatic merges) join names into one entity; merges are
@@ -20,6 +23,8 @@ Rules:
     - separate and pending -> nothing.
     - match_method is normalized (automatic), evidence (provisional decision) or reviewed
       (confirmed decision); reviewed is true only for confirmed decisions.
+    - Joint ventures (decisions/jv_decisions.csv, from jv_members.py): JV spellings
+      with the same members are one JV entity; each member gets share 1/n.
     - Stops without writing if decisions conflict (see review_decisions.py check).
 
 Only names in a multi-name entity or a relation are listed; any other awardee_name is
@@ -41,6 +46,7 @@ from collections import defaultdict
 import duckdb
 
 from normalize import decode_entities
+from jv_members import JV_DECISIONS, MEMBER_SEP, read_jv_decisions
 from review_decisions import DECISIONS, UnionFind, read_decisions, validate
 
 
@@ -53,6 +59,7 @@ def main():
     parser.add_argument("--input", default="../philgeps.parquet", help="PhilGEPS parquet file")
     parser.add_argument("--matches", default="out", help="Directory with auto_merges.csv")
     parser.add_argument("--decisions", default=DECISIONS, help="Reviewer decisions file")
+    parser.add_argument("--jv-decisions", default=JV_DECISIONS, help="Joint-venture decisions file")
     parser.add_argument("--out-dir", default="out", help="Output directory")
     parser.add_argument("--summary-size", type=int, default=50, help="Entities in entity_summary.csv")
     args = parser.parse_args()
@@ -133,6 +140,40 @@ def main():
                 if cid != pid:
                     relations.append([cid, pid, "branch_of", d["status"], d["basis"]])
 
+    # Joint ventures: group spellings by their set of member entities.
+    jv_groups = defaultdict(list)
+    for d in read_jv_decisions(args.jv_decisions):
+        names = [m.strip() for m in d["members"].split(MEMBER_SEP) if m.strip()]
+        member_ids = []
+        for m in names:
+            if m in amount or m in uf.parent:
+                mid = add_entity(m)
+            else:  # a partner that never won a contract on its own, e.g. a foreign firm
+                canonical = decode_entities(m)
+                mid = entity_id(canonical)
+                entities.setdefault(mid, [mid, canonical, "contractor", ""])
+            if mid not in member_ids:
+                member_ids.append(mid)
+        if len(member_ids) >= 2:
+            jv_groups[tuple(sorted(member_ids))].append(d)
+    memberships, jv_total = [], {}
+    for member_ids, spellings in jv_groups.items():
+        canonical = decode_entities(max((d["jv_name"] for d in spellings), key=lambda n: (amount.get(n, 0.0), n)))
+        jid = "jv-" + hashlib.md5("|".join(member_ids).encode("utf-8")).hexdigest()[:16]
+        entities[jid] = [jid, canonical, "joint_venture", ""]
+        confirmed = all(d["status"] == "confirmed" for d in spellings)
+        for d in spellings:
+            aliases[d["jv_name"]] = [d["jv_name"], "philgeps", jid, "jv_members", "1.0", "true" if confirmed else "false"]
+        jv_total[jid] = sum(amount.get(d["jv_name"], 0.0) for d in spellings)
+        basis = "; ".join(sorted({d["basis"] for d in spellings}))
+        for mid in member_ids:
+            memberships.append([jid, mid, f"{1 / len(member_ids):.4f}",
+                                f"{'confirmed' if confirmed else 'provisional'}: {basis}"])
+
+    # Spellings now treated as a JV leave their contractor entity; drop entities left empty.
+    used = {a[2] for a in aliases.values()} | {i for r in relations for i in r[:2]} | {i for r in memberships for i in r[:2]}
+    entities = {k: v for k, v in entities.items() if k in used}
+
     os.makedirs(args.out_dir, exist_ok=True)
 
     def write(name, header, rows):
@@ -159,13 +200,35 @@ def main():
     write("entity_summary.csv", ["entity_id", "canonical_name", "spellings", "entity_total",
                                  "largest_spelling_total", "added_by_grouping"], summary[:args.summary_size])
 
+    write("entity_membership.csv", ["parent_entity_id", "member_entity_id", "share", "evidence"], sorted(memberships))
+
+    direct = defaultdict(float)
+    for name, a in aliases.items():
+        direct[a[2]] += amount.get(name, 0.0)
+    for name, total in amount.items():
+        if name not in aliases:
+            direct[entity_id(decode_entities(name).replace("\xa0", " "))] += total
+    involved, attributed, n_jv = defaultdict(float), defaultdict(float), defaultdict(int)
+    for jid, mid, share, _ in memberships:
+        involved[mid] += jv_total[jid]
+        attributed[mid] += jv_total[jid] * float(share)
+        n_jv[mid] += 1
+    jv_rows = [[mid, entities[mid][1], f"{direct.get(mid, 0.0):.2f}", n_jv[mid], f"{involved[mid]:.2f}",
+                f"{attributed[mid]:.2f}", f"{direct.get(mid, 0.0) + attributed[mid]:.2f}"] for mid in involved]
+    jv_rows.sort(key=lambda r: -float(r[4]))
+    write("contractor_jv_summary.csv", ["entity_id", "canonical_name", "direct_total", "joint_ventures",
+                                        "jv_involved_total", "jv_attributed_total", "direct_plus_attributed"], jv_rows)
+
     by_decision = defaultdict(int)
     for d in decisions:
         by_decision[(d["decision"], d["status"])] += 1
     print("Decisions: " + ", ".join(f"{d} ({s}): {n}" for (d, s), n in sorted(by_decision.items())))
     print(f"Entities with more than one name: {len(summary):,}; aliases listed: {len(aliases):,}; "
           f"relations: {len(set(map(tuple, relations)))}")
-    print(f"Written to {args.out_dir}/entity.csv, entity_alias.csv, entity_relation.csv, entity_summary.csv")
+    print(f"Joint ventures: {len(jv_groups):,} JV entities from {sum(len(v) for v in jv_groups.values()):,} spellings; "
+          f"{len(involved):,} contractors with JV work")
+    print(f"Written to {args.out_dir}/: entity, entity_alias, entity_relation, entity_membership, "
+          f"entity_summary, contractor_jv_summary (.csv)")
 
 
 if __name__ == "__main__":

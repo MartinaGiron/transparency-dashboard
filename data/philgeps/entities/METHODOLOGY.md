@@ -146,10 +146,37 @@ Automatic merges and `merge` decisions are joined transitively into entities. `r
 
 On the current decisions: 2,038 multi-name entities covering 4,187 spellings, and 11 relations.
 
+### 8. Joint ventures (`jv_members.py`)
+
+A joint venture (JV) stays its own awardee, since it signed the contract. Its members are recorded alongside, so member contractors can be credited for JV work.
+
+**Which names are JVs.** Names with an explicit marker (`JOINT VENTURE`, `JOIN VENTURE`, `(J.V.)`, `( J. V )`, `- JV`, `JV WITH`, `CONSORTIUM`), plus names with a `/` between parts that are each a known contractor (an awardee in their own right), e.g. `THREE W BUILDERS, INC./TAGUM BUILDERS CONTRACTORS CORP.`. A `/` alone isn't enough (`... PERSONS W/ DISABILITY`, `GLASS/ALUMINUM`). On the 2025-11-16 data: 1,169 JV names, ₱284B; 86 of them found by the `/` rule.
+
+**Finding members.**
+1. Markers and notes are removed. A marker between two names (`... JOINT VENTURE WITH ...`, `... JV WITH ...`) becomes a separator.
+2. Splits are tried at `/`, ` - `, `,`, ` AND `, ` & ` and ` WITH `. The split whose parts all match known contractors wins, so `KHAN KON CHI CONSTRUCTION & DEVELOPMENT CORPORATION AND MRBII ...` splits at `AND`, not at `&`. Parts can't start with a legal-form word (`INC. AND ...`), and two parts can't be the same contractor. Unmatched parts are split again (three-member JVs).
+3. A part matches a contractor by `clean_key` (exact), by `core_key` if unique (core), or as a unique short form of a longer name without a legal form (prefix: `MEDILINES` → `MEDILINES DISTRIBUTORS INCORPORATED`, flagged for review). Each contractor is named by its largest spelling.
+4. **DPWH evidence:** where the JV has DPWH contracts, DPWH's contractor field lists members as `NAME (ID) / NAME (ID)`. The split agrees when each member matches one DPWH entry on its distinctive words, including the former name in a `(FORMERLY: ...)` note (`JCHARDHAT INC.` = `BLACK HARDHAT INC. (FORMERLY: JCHARDHAT INC.)`). A member we couldn't find is resolved through DPWH's fuller spelling (`A.M. ORETA` → `A. M. ORETA & CO., INC.`). DPWH sometimes lists different members on different contracts of one JV name; a listing that agrees with the split is used, and the number of listings is noted.
+
+Result: members found for all parts of 1,012 JV names, DPWH agreement for 598. 209 JV names (₱45.2B) are flagged for review: 110 with a member that never won a contract alone (often a foreign partner, e.g. `NTT DATA CORPORATION`, which is a legitimate member and gets an entity of its own), 12 where DPWH lists different members, 37 found by `/` alone without DPWH confirmation, 23 that couldn't be split.
+
+**Decisions.** `jv_members.py import` writes each JV name and its proposed members to `decisions/jv_decisions.csv` as a provisional decision, never changing existing rows. Reviewers correct `members` (separated by ` | `) and set `status`.
+
+**Entities and metrics** (`build_seeds.py`). JV spellings with the same member entities form one JV entity (`entity_type = joint_venture`). Each member gets an equal share, 1/n, recorded in `entity_membership.csv`. `contractor_jv_summary.csv` gives, per contractor:
+
+| Metric | Meaning | Property |
+|---|---|---|
+| `direct_total` | contracts awarded to the contractor itself | additive |
+| `jv_involved_total` | the full amount of every JV it's a member of | **not additive** across contractors: a JV's amount counts once per member |
+| `jv_attributed_total` | JV amount × its share (1/n) | additive, but the equal split is an assumption; actual JV agreements may divide work differently |
+
+Example: MANCOL CONSTRUCTION CORPORATION has ₱1.3B in direct awards and ₱6.4B through JVs (₱3.2B attributed).
+
 ## Known limitations
 
 - The pilot only covers pairs involving names with ₱1B or more. Smaller contractors are only grouped by step 2.
 - DPWH evidence exists only for DPWH contracts whose PhilGEPS title starts with the contract ID. Most non-construction suppliers have none.
 - Fuzzy matching compares spelling only. Two genuinely different businesses with similar names (`THREE W BUILDERS` / `THREE G BUILDERS`) can be proposed; shared buyers and DPWH IDs are what separate them.
-- Joint ventures aren't yet linked to their member contractors.
+- JV member shares are assumed equal; actual JV agreements aren't in the data.
+- JV amounts include the source's duplicate rows (see #6), like all totals here.
 - `entity_id` is derived from the canonical name, so it changes if a different spelling becomes the largest.

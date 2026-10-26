@@ -128,7 +128,7 @@ def name_keys(name: str) -> dict:
     return {"clean_key": clean, "core_key": core, "loose_key": loose, "notes": notes}
 
 
-JV_PATTERN = re.compile(r"(JOINT? VENTURE|\bJ\.?V\.?$|[-/ (]JV\b|\bCONSORTIUM\b)", re.I)
+JV_PATTERN = re.compile(r"(JOINT? VENTURE|\bJ\.?\s?V\.?\s*$|\(\s*J\.?\s?V\.?\s*\)|[-/ (]JV\b|\bCONSORTIUM\b)", re.I)
 JV_FALSE_POSITIVES = re.compile(r"\bJV (&|AND) CO|JVS\b|JVTM|\bJV (GENERAL|TRADING|ENTERPRISES?)\b", re.I)
 
 
