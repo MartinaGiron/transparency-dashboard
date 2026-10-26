@@ -68,13 +68,61 @@ Only pairs where one side has at least ₱1B in contracts are kept for this pilo
 
 From this, `suggested_decision` is `yes` for the same DPWH ID, `no` for different DPWH IDs, `no` for a fuzzy pair with no shared buyers, and blank otherwise.
 
-### 5. Triage (`next_action`)
+### 5. Triage (`triage.py`)
 
-A reviewer triage file (`awardee_match_review_related.csv`, 2026-10-26) added further columns to the 355 pairs: `name_core_a/b` (distinctive part of each name), `core_similarity`, `buyer_overlap` (shared buyers as a share of the smaller side's buyers), `year_handoff` (one name's activity ending as the other's starts), `evidence_score` (0–10), `relation_label`, `relation_evidence` and `next_action`. These columns were produced in a separate AI-assisted (Claude) analysis session, not by this repository's scripts, so they can't yet be reproduced from the code here. Only `next_action` is used, as the starting point for decisions, and every decision taken from it is `provisional` until a person confirms it.
+Each pair gets a label from a **rule cascade**. The method was first designed in a separate AI-assisted (Claude) analysis session and is now implemented in `triage.py`. It reproduces that session's output (`awardee_match_review_related.csv`, 2026-10-26) exactly on all 355 pairs. Details the original description left open were inferred from its output; they're marked *inferred* below.
+
+**Name core.** What's left of a name after removing legal forms and generic trade words:
+1. ASCII uppercase (`Ñ` → `N`); `&AMP;` and `&` → `AND`; `+` → `PLUS` *(inferred)*; other punctuation → space *(inferred: `BUILDERS,INC` splits)*.
+2. Remove legal forms: INC, INCORPORATED, CORP, CORPORATION, CO, COMPANY, OPC, LTD, LIMITED, PHIL, PHILS, PHILIPPINES.
+3. Remove trade words: CONSTRUCTION, SUPPLY, SUPPLIES, TRADING, ENTERPRISE(S), BUILDER(S), SERVICE(S), MARKETING, DEVELOPMENT, AND, GEN, GENERAL, MERCHANDISE, SOLUTION(S). *Inferred:* CONST, CONSTRUCT, CONTRACTOR(S), ENGINEERING, INDUSTRIAL, INDUSTRY, INDUSTRIES, EQUIPMENT, EQUIPT, EQIUPT, RENTAL(S), LUMBER, GLASS, MERCH, BRANCH, DEV.
+4. Remove misspelled trade words: difflib ratio ≥ 0.85 against trade words of 8+ letters (`CONTRUCTION`, `CONZTRUCT`), ≥ 0.9 against shorter ones (`SUPPY`). *Inferred:* the split keeps real words such as `SERVICO` (0.857 to SERVICE).
+5. Drop a trailing S from words longer than 3 letters (`SYSTEMS` = `SYSTEM`).
+6. Remove spaces (`AL NINO` = `ALNINO`).
+
+Example: `2-R CONSTRUCTION & SUPPLY` → `2R`.
+
+**Features.**
+
+| Feature | Definition |
+|---|---|
+| same core | cores equal and at least 2 characters |
+| `core_similarity` | difflib ratio of the two cores (2M / (len a + len b)) |
+| `buyer_overlap` | shared buyers / max(1, buyers of the side with fewer buyers), so a small awardee isn't penalized for being small |
+| `year_handoff` | with the two year ranges sorted by start: the later starts within 2 years of the earlier's end, and ends after it |
+| branch | either name contains `BRANCH`, or contains ` - ` while the cores differ |
+
+**Evidence score** (0–10, for ranking within a label only): same DPWH ID +5; DPWH links a name to 2+ IDs +1; same core +2, otherwise core similarity ≥ 0.85 +1; 3+ shared buyers or overlap ≥ 0.30 +2, otherwise any shared buyer +1; year handoff +1.
+
+**Label cascade** (first match wins):
+
+| # | Condition | `relation_label` | `next_action` |
+|---|---|---|---|
+| 1 | same DPWH contractor ID | `same_entity` | merge |
+| 2 | branch, core similarity ≥ 0.6, any shared buyer | `same_parent_unit` | keep units separate; roll up to parent for totals |
+| 3 | cores differ but one contains the other or similarity ≥ 0.75, with 3+ shared buyers and overlap ≥ 0.30 | `related_check` | keep separate; pull GIS/DTI owner before linking |
+| 4 | different DPWH IDs and same core, with a shared buyer or year handoff | `related_likely` | keep separate; link as related; pull GIS for shared officers |
+| 5 | different DPWH IDs and same core, or similarity ≥ 0.85 with 3+ shared buyers | `related_check` | keep separate; pull GIS/DTI owner before linking |
+| 6 | different DPWH IDs, otherwise | `unrelated_likely` | keep separate |
+| 7 | same core, with a shared buyer or year handoff | `same_or_successor_likely` | merge; confirm with SEC/DTI lookup if amount is material |
+| 8 | same core, or similarity ≥ 0.85 with a shared buyer | `check` | registry lookup on both names |
+| 9 | otherwise | `unrelated_likely` | keep separate |
+
+DPWH contractor IDs override everything else in both directions: the same ID means the same entity, and different IDs with the same core mean related, not the same, because DPWH shows two registrations.
+
+`relation_evidence` lists the signals as text. Buyer overlap is shown with a percentage when it counts as strong (3+ buyers or ≥ 30%), otherwise as `N shared buyer(s)`. Names with a foreign legal form (LIMITED, LTD, PTY; GMBH, PTE and LLC added) are noted as `foreign entity: not in SEC/DTI`, because a Philippine registry lookup won't settle them.
+
+On the 2025-11-16 data: 108 same_entity, 103 same_or_successor_likely, 95 unrelated_likely, 29 check, 11 related_check, 4 related_likely, 5 same_parent_unit.
+
+**Weaknesses of the triage:**
+- Thresholds (0.85, 0.75, 0.30, 3 buyers, 2 years) were set by hand from about 40 pairs, not fitted to labeled data.
+- Buyer overlap is confounded by geography: contractors in one region bid to the same DPWH district offices, so overlap overstates relatedness for regional contractors.
+- Short cores (initialisms like `MG`, `4B`, `RJB`) match by chance. That's why same-core pairs with no shared buyers go to `check`.
+- Middle initials are treated like typos: `ROLANDO C. SICCION` / `ROLANDO S. SICCION` scores like a misspelling but may be two relatives.
 
 ### 6. Turn triage into decisions (`review_decisions.py import`)
 
-Each `next_action` becomes a **provisional** decision in `decisions/awardee_decisions.csv`:
+`review_decisions.py import` turns each `next_action` into a **provisional** decision in `decisions/awardee_decisions.csv`:
 
 | `next_action` | Decision |
 |---|---|

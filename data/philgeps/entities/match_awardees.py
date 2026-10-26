@@ -15,6 +15,10 @@ Candidates (each side is a group of names that share a clean_key):
     fuzzy          similar core_key (difflib ratio >= --min-similarity) within a block
                    of names sharing a first word or first letters
 
+Each pair also gets triage columns from triage.py (name cores, buyer overlap, year
+handoff, evidence score, relation_label and next_action); next_action is what
+review_decisions.py import turns into provisional decisions.
+
 Only pairs where one side has at least --min-amount in contracts are kept. Joint
 ventures are left out; they are handled separately. Amounts include duplicate rows
 in the source, so they are for ranking, not reporting.
@@ -33,6 +37,7 @@ from difflib import SequenceMatcher
 import duckdb
 
 from normalize import is_joint_venture, name_keys
+from triage import triage
 
 REVIEW_COLUMNS = [
     "pair_id", "match_method", "similarity",
@@ -43,6 +48,8 @@ REVIEW_COLUMNS = [
     "dpwh_contractor_a", "dpwh_contractor_b", "dpwh_evidence",
     "suggested_decision", "suggested_reason",
     "decision", "reviewer_notes",
+    "name_core_a", "name_core_b", "core_similarity", "buyer_overlap", "year_handoff",
+    "evidence_score", "relation_label", "relation_evidence", "next_action",
 ]
 
 # DPWH contract IDs (e.g. 24F00470) at the start of a PhilGEPS award or notice title.
@@ -304,6 +311,8 @@ def main():
             "dpwh_evidence": evidence if args.dpwh else "", "suggested_decision": suggestion, "suggested_reason": reason,
             "decision": "", "reviewer_notes": "",
         })
+    for r in rows:
+        r.update(triage(r))
     rows.sort(key=lambda r: -r["amount_at_stake"])
     for i, r in enumerate(rows, 1):
         r["pair_id"] = i
@@ -325,6 +334,10 @@ def main():
     for r in rows:
         suggested[r["suggested_decision"] or "none"] += 1
     print(f"Suggested decisions:      " + ", ".join(f"{s}: {n:,}" for s, n in sorted(suggested.items())))
+    labels = defaultdict(int)
+    for r in rows:
+        labels[r["relation_label"]] += 1
+    print(f"Triage labels:            " + ", ".join(f"{s}: {n:,}" for s, n in sorted(labels.items())))
     print(f"Written to {args.out_dir}/auto_merges.csv and {args.out_dir}/awardee_match_review.csv")
 
 

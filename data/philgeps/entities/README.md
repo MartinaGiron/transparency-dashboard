@@ -9,7 +9,7 @@ Groups awardee name spellings that belong to the same contractor (e.g. `EGB CONS
 | File | Who edits it | Committed |
 |---|---|---|
 | `decisions/awardee_decisions.csv` | **reviewers** | yes |
-| `normalize.py`, `match_awardees.py`, `review_decisions.py`, `build_seeds.py` | developers | yes |
+| `normalize.py`, `match_awardees.py`, `triage.py`, `review_decisions.py`, `build_seeds.py` | developers | yes |
 | `out/` (review file, automatic merges, entity tables) | nobody, regenerated | no |
 
 ## Running the pipeline
@@ -29,7 +29,9 @@ python review_decisions.py check
 python build_seeds.py --input ../philgeps.parquet
 ```
 
-Outputs in `out/`: `entity.csv`, `entity_alias.csv`, `entity_relation.csv`, and `entity_summary.csv` (largest entities, their total vs. their largest single spelling). Tests: `python -m unittest test_normalize`.
+Outputs in `out/`: `entity.csv`, `entity_alias.csv`, `entity_relation.csv`, and `entity_summary.csv` (largest entities, their total vs. their largest single spelling). Tests: `python -m unittest test_normalize test_triage`.
+
+`out/awardee_match_review.csv` includes the triage columns from `triage.py` (`relation_label`, `evidence_score`, `next_action`, ...). Step 2 turns `next_action` into provisional decisions for new pairs only.
 
 ## Reviewing
 
