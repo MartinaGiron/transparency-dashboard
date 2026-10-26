@@ -70,7 +70,7 @@ From this, `suggested_decision` is `yes` for the same DPWH ID, `no` for differen
 
 ### 5. Triage (`next_action`)
 
-A reviewer triage file (`awardee_match_review_related.csv`, 2026-10-26) added further columns to the 355 pairs: `name_core_a/b` (distinctive part of each name), `core_similarity`, `buyer_overlap` (shared buyers as a share of the smaller side's buyers), `year_handoff` (one name's activity ending as the other's starts), `evidence_score` (0–10), `relation_label`, `relation_evidence` and `next_action`. These columns were produced outside this repository's scripts. Only `next_action` is used, as the starting point for decisions.
+A reviewer triage file (`awardee_match_review_related.csv`, 2026-10-26) added further columns to the 355 pairs: `name_core_a/b` (distinctive part of each name), `core_similarity`, `buyer_overlap` (shared buyers as a share of the smaller side's buyers), `year_handoff` (one name's activity ending as the other's starts), `evidence_score` (0–10), `relation_label`, `relation_evidence` and `next_action`. These columns were produced in a separate AI-assisted (Claude) analysis session, not by this repository's scripts, so they can't yet be reproduced from the code here. Only `next_action` is used, as the starting point for decisions, and every decision taken from it is `provisional` until a person confirms it.
 
 ### 6. Turn triage into decisions (`review_decisions.py import`)
 
